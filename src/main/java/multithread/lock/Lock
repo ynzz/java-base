@@ -1,0 +1,22 @@
+package java.util.concurrent.locks;
+import java.util.concurrent.TimeUnit;
+ 
+public interface Lock {
+ 
+    //取得锁，但是要注意lock()忽视interrupt(), 拿不到锁就 一直阻塞
+    void lock();
+ 
+    //同样也是取得锁，但是lockInterruptibly()会响应打扰 interrupt()并catch到InterruptedException，从而跳出阻塞
+    void lockInterruptibly() throws InterruptedException;
+ 
+    //尝试取得锁，成功返回true
+    boolean tryLock();
+ 
+    //在规定的时间等待里，如果取得锁就返回tre
+    boolean tryLock(long time, TimeUnit unit) throws InterruptedException;
+ 
+    //释放锁
+    void unlock();
+    //条件状态，非常有用，Blockingqueue阻塞队列就是用到它了
+    Condition newCondition();
+}

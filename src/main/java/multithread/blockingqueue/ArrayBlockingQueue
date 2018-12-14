@@ -1,0 +1,461 @@
+package java.util.concurrent;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.AbstractQueue;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.lang.ref.WeakReference;
+import java.util.Spliterators;
+import java.util.Spliterator;
+ 
+ 
+public class ArrayBlockingQueue<E> extends AbstractQueue<E>
+        implements BlockingQueue<E>, java.io.Serializable {
+ 
+    private static final long serialVersionUID = -817911632652898426L;
+ 
+    /** 真正存入数据的数组*/
+    final Object[] items;
+ 
+    /** take, poll, peek or remove的下一个索引 */
+    int takeIndex;
+ 
+    /** put, offer, or add的下一个索引 */
+    int putIndex;
+ 
+    /**队列中元素个数*/
+    int count;
+ 
+ 
+    /**可重入锁 */
+    final ReentrantLock lock;
+ 
+    /** 队列不为空的条件 */
+    private final Condition notEmpty;
+ 
+    /** 队列未满的条件 */
+    private final Condition notFull;
+ 
+    transient Itrs itrs = null;
+ 
+ 
+    /**
+     *当前元素个数-1
+     */
+    final int dec(int i) {
+        return ((i == 0) ? items.length : i) - 1;
+    }
+ 
+    /**
+     * 返回对应索引上的元素
+     */
+    @SuppressWarnings("unchecked")
+    final E itemAt(int i) {
+        return (E) items[i];
+    }
+ 
+    /**
+     * 非空检查
+     *
+     * @param v the element
+     */
+    private static void checkNotNull(Object v) {
+        if (v == null)
+            throw new NullPointerException();
+    }
+ 
+    /**
+     * 元素放入队列，注意调用这个方法时都要先加锁
+     * 
+     */
+    private void enqueue(E x) {
+        final Object[] items = this.items;
+        items[putIndex] = x;
+        if (++putIndex == items.length)
+            putIndex = 0;
+        count++;//当前拥有元素个数加1
+        notEmpty.signal();//有一个元素加入成功，那肯定队列不为空
+    }
+ 
+    /**
+     * 元素出队，注意调用这个方法时都要先加锁
+     * 
+     */
+    private E dequeue() {
+        final Object[] items = this.items;
+        @SuppressWarnings("unchecked")
+        E x = (E) items[takeIndex];
+        items[takeIndex] = null;
+        if (++takeIndex == items.length)
+            takeIndex = 0;
+        count--;/当前拥有元素个数减1
+        if (itrs != null)
+            itrs.elementDequeued();
+        notFull.signal();//有一个元素取出成功，那肯定队列不满
+        return x;
+    }
+ 
+    /**
+     * 指定删除索引上的元素
+     * 
+     */
+    void removeAt(final int removeIndex) {
+        final Object[] items = this.items;
+        if (removeIndex == takeIndex) {
+            items[takeIndex] = null;
+            if (++takeIndex == items.length)
+                takeIndex = 0;
+            count--;
+            if (itrs != null)
+                itrs.elementDequeued();
+        } else {
+            final int putIndex = this.putIndex;
+            for (int i = removeIndex;;) {
+                int next = i + 1;
+                if (next == items.length)
+                    next = 0;
+                if (next != putIndex) {
+                    items[i] = items[next];
+                    i = next;
+                } else {
+                    items[i] = null;
+                    this.putIndex = i;
+                    break;
+                }
+            }
+            count--;
+            if (itrs != null)
+                itrs.removedAt(removeIndex);
+        }
+        notFull.signal();//有一个元素删除成功，那肯定队列不满
+    }
+ 
+    /**
+     * 
+     * 构造函数，设置队列的初始容量
+     */
+    public ArrayBlockingQueue(int capacity) {
+        this(capacity, false);
+    }
+ 
+    /**
+     * 构造函数。capacity设置数组大小 ，fair设置是否为公平锁
+     * capacity and the specified access policy.
+     */
+    public ArrayBlockingQueue(int capacity, boolean fair) {
+        if (capacity <= 0)
+            throw new IllegalArgumentException();
+        this.items = new Object[capacity];
+        lock = new ReentrantLock(fair);//是否为公平锁，如果是的话，那么先到的线程先获得锁对象。
+        //否则，由操作系统调度由哪个线程获得锁，一般为false，性能会比较高
+        notEmpty = lock.newCondition();
+        notFull =  lock.newCondition();
+    }
+ 
+    /**
+     *构造函数，带有初始内容的队列
+     */
+    public ArrayBlockingQueue(int capacity, boolean fair,
+                              Collection<? extends E> c) {
+        this(capacity, fair);
+ 
+        final ReentrantLock lock = this.lock;
+        lock.lock(); //要给数组设置内容，先上锁
+        try {
+            int i = 0;
+            try {
+                for (E e : c) {
+                    checkNotNull(e);
+                    items[i++] = e;//依次拷贝内容
+                }
+            } catch (ArrayIndexOutOfBoundsException ex) {
+                throw new IllegalArgumentException();
+            }
+            count = i;
+            putIndex = (i == capacity) ? 0 : i;//如果putIndex大于数组大小 ，那么从0重新开始
+        } finally {
+            lock.unlock();//最后一定要释放锁
+        }
+    }
+ 
+    /**
+     * 添加一个元素，其实super.add里面调用了offer方法
+     */
+    public boolean add(E e) {
+        return super.add(e);
+    }
+ 
+    /**
+     *加入成功返回true,否则返回false
+     * 
+     */
+    public boolean offer(E e) {
+        checkNotNull(e);
+        final ReentrantLock lock = this.lock;
+        lock.lock();//上锁
+        try {
+            if (count == items.length) //超过数组的容量
+                return false;
+            else {
+                enqueue(e); //放入元素
+                return true;
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+ 
+    /**
+     * 如果队列已满的话，就会等待
+     */
+    public void put(E e) throws InterruptedException {
+        checkNotNull(e);
+        final ReentrantLock lock = this.lock;
+        lock.lockInterruptibly();//和lock()方法的区别是让它在阻塞时也可抛出异常跳出
+        try {
+            while (count == items.length)
+                notFull.await(); //这里就是阻塞了，要注意。如果运行到这里，那么它会释放上面的锁，一直等到notify
+            enqueue(e);
+        } finally {
+            lock.unlock();
+        }
+    }
+ 
+    /**
+     * 带有超时时间的插入方法，unit表示是按秒、分、时哪一种
+     */
+    public boolean offer(E e, long timeout, TimeUnit unit)
+        throws InterruptedException {
+ 
+        checkNotNull(e);
+        long nanos = unit.toNanos(timeout);
+        final ReentrantLock lock = this.lock;
+        lock.lockInterruptibly();
+        try {
+            while (count == items.length) {
+                if (nanos <= 0)
+                    return false;
+                nanos = notFull.awaitNanos(nanos);//带有超时等待的阻塞方法
+            }
+            enqueue(e);//入队
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+ 
+    //实现的方法，如果当前队列为空，返回null
+    public E poll() {
+        final ReentrantLock lock = this.lock;
+        lock.lock();
+        try {
+            return (count == 0) ? null : dequeue();
+        } finally {
+            lock.unlock();
+        }
+    }
+     //实现的方法，如果当前队列为空，一直阻塞
+    public E take() throws InterruptedException {
+        final ReentrantLock lock = this.lock;
+        lock.lockInterruptibly();
+        try {
+            while (count == 0)
+                notEmpty.await();//队列为空，阻塞方法
+            return dequeue();
+        } finally {
+            lock.unlock();
+        }
+    }
+    //带有超时时间的取元素方法，否则返回Null
+    public E poll(long timeout, TimeUnit unit) throws InterruptedException {
+        long nanos = unit.toNanos(timeout);
+        final ReentrantLock lock = this.lock;
+        lock.lockInterruptibly();
+        try {
+            while (count == 0) {
+                if (nanos <= 0)
+                    return null;
+                nanos = notEmpty.awaitNanos(nanos);//超时等待
+            }
+            return dequeue();//取得元素
+        } finally {
+            lock.unlock();
+        }
+    }
+    //只是看一个队列最前面的元素，取出是不删除队列中的原来元素。队列为空时返回null
+    public E peek() {
+        final ReentrantLock lock = this.lock;
+        lock.lock();
+        try {
+            return itemAt(takeIndex); // 队列为空时返回null
+        } finally {
+            lock.unlock();
+        }
+    }
+ 
+    /**
+     * 返回队列当前元素个数
+     *
+     */
+    public int size() {
+        final ReentrantLock lock = this.lock;
+        lock.lock();
+        try {
+            return count;
+        } finally {
+            lock.unlock();
+        }
+    }
+ 
+    /**
+     * 返回当前队列再放入多少个元素就满队
+     */
+    public int remainingCapacity() {
+        final ReentrantLock lock = this.lock;
+        lock.lock();
+        try {
+            return items.length - count;
+        } finally {
+            lock.unlock();
+        }
+    }
+ 
+    /**
+     *  从队列中删除一个元素的方法。删除成功返回true,否则返回false
+     */
+    public boolean remove(Object o) {
+        if (o == null) return false;
+        final Object[] items = this.items;
+        final ReentrantLock lock = this.lock;
+        lock.lock();
+        try {
+            if (count > 0) {
+                final int putIndex = this.putIndex;
+                int i = takeIndex;
+                do {
+                    if (o.equals(items[i])) {
+                        removeAt(i); //真正删除的方法
+                        return true;
+                    }
+                    if (++i == items.length)
+                        i = 0;
+                } while (i != putIndex);//一直不断的循环取出来做判断
+            }
+            return false;
+        } finally {
+            lock.unlock();
+        }
+    }
+ 
+    /**
+     * 是否包含一个元素
+     */
+    public boolean contains(Object o) {
+        if (o == null) return false;
+        final Object[] items = this.items;
+        final ReentrantLock lock = this.lock;
+        lock.lock();
+        try {
+            if (count > 0) {
+                final int putIndex = this.putIndex;
+                int i = takeIndex;
+                do {
+                    if (o.equals(items[i]))
+                        return true;
+                    if (++i == items.length)
+                        i = 0;
+                } while (i != putIndex);
+            }
+            return false;
+        } finally {
+            lock.unlock();
+        }
+    }
+ 
+    /**
+     * 清空队列
+     *
+     */
+    public void clear() {
+        final Object[] items = this.items;
+        final ReentrantLock lock = this.lock;
+        lock.lock();
+        try {
+            int k = count;
+            if (k > 0) {
+                final int putIndex = this.putIndex;
+                int i = takeIndex;
+                do {
+                    items[i] = null;
+                    if (++i == items.length)
+                        i = 0;
+                } while (i != putIndex);
+                takeIndex = putIndex;
+                count = 0;
+                if (itrs != null)
+                    itrs.queueIsEmpty();
+                for (; k > 0 && lock.hasWaiters(notFull); k--)
+                    notFull.signal();
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+ 
+    /**
+     * 取出所有元素到集合
+     */
+    public int drainTo(Collection<? super E> c) {
+        return drainTo(c, Integer.MAX_VALUE);
+    }
+ 
+    /**
+     * 取出所有元素到集合
+     */
+    public int drainTo(Collection<? super E> c, int maxElements) {
+        checkNotNull(c);
+        if (c == this)
+            throw new IllegalArgumentException();
+        if (maxElements <= 0)
+            return 0;
+        final Object[] items = this.items;
+        final ReentrantLock lock = this.lock;
+        lock.lock();
+        try {
+            int n = Math.min(maxElements, count);
+            int take = takeIndex;
+            int i = 0;
+            try {
+                while (i < n) {
+                    @SuppressWarnings("unchecked")
+                    E x = (E) items[take];
+                    c.add(x);
+                    items[take] = null;
+                    if (++take == items.length)
+                        take = 0;
+                    i++;
+                }
+                return n;
+            } finally {
+                // Restore invariants even if c.add() threw
+                if (i > 0) {
+                    count -= i;
+                    takeIndex = take;
+                    if (itrs != null) {
+                        if (count == 0)
+                            itrs.queueIsEmpty();
+                        else if (i > take)
+                            itrs.takeIndexWrapped();
+                    }
+                    for (; i > 0 && lock.hasWaiters(notFull); i--)
+                        notFull.signal();
+                }
+            }
+        } finally {
+            lock.unlock();
+        }
+    }
+ 
+ 
+}

@@ -1,0 +1,18 @@
+    static final class HashEntry<K,V> {
+        final K key;
+        final int hash;//用来保存Segment索引的信息
+        volatile V value;
+        final HashEntry<K,V> next;
+ 
+        HashEntry(K key, int hash, HashEntry<K,V> next, V value) {
+            this.key = key;
+            this.hash = hash;
+            this.next = next;
+            this.value = value;
+        }
+ 
+	@SuppressWarnings("unchecked")
+	static final <K,V> HashEntry<K,V>[] newArray(int i) {
+	    return new HashEntry[i];
+	}
+    }

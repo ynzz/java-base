@@ -1,0 +1,17 @@
+    /**
+     * Segment内部类，注意它也是一个锁！可以认为它是一个带有锁方法的map
+     */
+    static final class Segment<K,V> extends ReentrantLock implements Serializable {
+ 
+        private static final long serialVersionUID = 2249069246763182397L;
+  
+        //元素个数
+        transient volatile int count;
+        //修改次数
+        transient int modCount;
+        //阈值，超过这个数会重新reSize
+        transient int threshold;
+        //注意，这里又一个数组，这个是真正存放数据元素的地方
+        transient volatile HashEntry<K,V>[] table;
+        //装载因子，用来计算threshold
+        final float loadFactor;
